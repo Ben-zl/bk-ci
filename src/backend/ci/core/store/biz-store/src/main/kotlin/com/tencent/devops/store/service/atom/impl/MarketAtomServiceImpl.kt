@@ -294,7 +294,12 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
         classifyList?.forEach {
             val classifyCode = it["classifyCode"] as String
             if (classifyCode != "trigger") {
-                labelInfoList.add(MarketMainItemLabel(classifyCode, it["classifyName"] as String))
+                val classifyName = it["classifyName"] as String
+                val classifyLanName = MessageCodeUtil.getCodeLanMessage(
+                    messageCode = "${StoreMessageCode.MSG_CODE_STORE_CLASSIFY_PREFIX}$classifyCode",
+                    defaultMessage = classifyName
+                )
+                labelInfoList.add(MarketMainItemLabel(classifyCode, classifyLanName))
                 futureList.add(
                     doList(
                         userId = userId,
@@ -459,14 +464,21 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
             val labelList = atomLabelService.getLabelsByAtomId(atomId).data // 查找标签列表
             val userCommentInfo = storeCommentService.getStoreUserCommentInfo(userId, atomCode, StoreTypeEnum.ATOM)
             val atomEnvInfoRecord = marketAtomEnvInfoDao.getMarketAtomEnvInfoByAtomId(dslContext, atomId)
+            val feature = marketAtomFeatureDao.getAtomFeature(dslContext, atomCode)
+            val classifyCode = record["classifyCode"] as? String
+            val classifyName = record["classifyName"] as? String
+            val classifyLanName = MessageCodeUtil.getCodeLanMessage(
+                messageCode = "${StoreMessageCode.MSG_CODE_STORE_CLASSIFY_PREFIX}$classifyCode",
+                defaultMessage = classifyName
+            )
             Result(
                 AtomVersion(
                     atomId = atomId,
                     atomCode = atomCode,
                     name = record["name"] as String,
                     logoUrl = record["logoUrl"] as? String,
-                    classifyCode = record["classifyCode"] as? String,
-                    classifyName = record["classifyName"] as? String,
+                    classifyCode = classifyCode,
+                    classifyName = classifyLanName,
                     category = AtomCategoryEnum.getAtomCategory((record["category"] as Byte).toInt()),
                     docsLink = record["docsLink"] as? String,
                     htmlTemplateVersion = htmlTemplateVersion,
@@ -502,7 +514,8 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
                     pkgName = atomEnvInfoRecord?.pkgName,
                     userCommentInfo = userCommentInfo,
                     visibilityLevel = VisibilityLevelEnum.getVisibilityLevel(record["visibilityLevel"] as Int),
-                    privateReason = record["privateReason"] as? String
+                    privateReason = record["privateReason"] as? String,
+                    recommendFlag = feature?.recommendFlag
                 )
             )
         }
@@ -560,7 +573,6 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
             return MessageCodeUtil.generateResponseDataObject(StoreMessageCode.USER_INSTALL_ATOM_CODE_IS_INVALID, false)
         }
         return storeProjectService.installStoreComponent(
-            accessToken = accessToken,
             userId = userId,
             projectCodeList = installAtomReq.projectCode,
             storeId = atom.id,
@@ -674,9 +686,14 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
         return Result(true)
     }
 
-    fun generateCiYaml(atomCode: String?): String {
+    override fun generateCiYaml(
+        atomCode: String?,
+        os: String?,
+        classType: String?,
+        defaultShowFlag: Boolean?
+    ): String {
         val atomCodeList = if (atomCode.isNullOrBlank()) {
-            marketAtomDao.getSupportGitCiAtom(dslContext).map { it.value1() }
+            marketAtomDao.getSupportGitCiAtom(dslContext, os, classType).map { it.value1() }
         } else {
             listOf(atomCode)
         }
@@ -686,7 +703,7 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
             val atom = marketAtomDao.getLatestAtomByCode(dslContext, it) ?: return@forEach
             val feature = marketAtomFeatureDao.getAtomFeature(dslContext, it) ?: return@forEach
             if (null == feature.recommendFlag || feature.recommendFlag) {
-                buf.append(generateYaml(atom))
+                buf.append(generateYaml(atom, defaultShowFlag))
                 buf.append("\r\n")
                 buf.append("\r\n")
             } else {
@@ -698,11 +715,13 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun generateYaml(atom: TAtomRecord): String {
+    private fun generateYaml(atom: TAtomRecord, defaultShowFlag: Boolean?): String {
         val sb = StringBuffer()
-            .append("h2. ${atom.name}\r\n")
-            .append("{code:theme=Midnight|linenumbers=true|language=YAML|collapse=false}\r\n")
-            .append("- taskType: marketBuild@latest\r\n")
+            if (defaultShowFlag != null && defaultShowFlag) {
+                sb.append("h2. ${atom.name}\r\n")
+                    .append("{code:theme=Midnight|linenumbers=true|language=YAML|collapse=false}\r\n")
+            }
+            sb.append("- taskType: marketBuild@latest\r\n")
             .append("  displayName: ${atom.name}\r\n")
             .append("  inputs:\r\n")
             .append("    atomCode: ${atom.atomCode}\r\n")
@@ -724,7 +743,12 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
                 val description = if (label?.toString().isNullOrBlank()) {
                     if (text?.toString().isNullOrBlank()) {
                         desc
-                    } else { text } } else { label }
+                    } else {
+                        text
+                    }
+                } else {
+                    label
+                }
                 val type = paramValueMap["type"]
                 val required = paramValueMap["required"]
                 val defaultValue = paramValueMap["default"]
@@ -776,7 +800,9 @@ abstract class MarketAtomServiceImpl @Autowired constructor() : MarketAtomServic
         } else {
             sb.append("      output: {}\r\n")
         }
-        sb.append("{code}\r\n \r\n")
+        if (defaultShowFlag != null && defaultShowFlag) {
+            sb.append("{code}\r\n \r\n")
+        }
         return sb.toString()
     }
 

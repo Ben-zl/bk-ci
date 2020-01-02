@@ -78,6 +78,10 @@ class ServiceProjectResourceImpl @Autowired constructor(
         return Result(projectService.list(projectCodes))
     }
 
+    override fun listOnlyByProjectCode(projectCodes: Set<String>): Result<List<ProjectVO>> {
+        return Result(projectService.listOnlyByProjectCode(projectCodes))
+    }
+
     override fun listByProjectCodeV2(projectCodes: Set<String>): Result<List<ProjectVO>> {
         return Result(projectService.list(projectCodes))
     }
@@ -100,9 +104,5 @@ class ServiceProjectResourceImpl @Autowired constructor(
 
     override fun getV2(englishName: String): Result<ProjectVO?> {
         return Result(projectService.getByEnglishName(englishName))
-    }
-
-    override fun createGitCIProject(gitProjectId: Long, userId: String): Result<ProjectVO> {
-        return Result(projectService.createGitCIProject(userId, gitProjectId))
     }
 }

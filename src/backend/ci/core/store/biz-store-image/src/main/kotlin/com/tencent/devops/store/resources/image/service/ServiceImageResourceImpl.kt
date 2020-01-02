@@ -27,9 +27,9 @@ package com.tencent.devops.store.resources.image.service
 
 import com.tencent.devops.common.api.pojo.Result
 import com.tencent.devops.common.web.RestResource
-import com.tencent.devops.store.api.image.service.ServiceImageResource
+import com.tencent.devops.store.api.image.service.ServiceStoreImageResource
 import com.tencent.devops.store.pojo.common.enums.StoreTypeEnum
-import com.tencent.devops.store.pojo.image.response.ImageDetail
+import com.tencent.devops.store.pojo.image.response.ImageRepoInfo
 import com.tencent.devops.store.service.common.StoreProjectService
 import com.tencent.devops.store.service.image.ImageFeatureService
 import com.tencent.devops.store.service.image.ImageService
@@ -40,7 +40,15 @@ class ServiceImageResourceImpl @Autowired constructor(
     private val imageService: ImageService,
     private val imageFeatureService: ImageFeatureService,
     private val storeProjectService: StoreProjectService
-) : ServiceImageResource {
+) : ServiceStoreImageResource {
+    override fun getSelfDevelopPublicImages(): Result<List<ImageRepoInfo>> {
+        return Result(
+            imageService.getSelfDevelopPublicImages(
+                interfaceName = "/service/market/image/self_develop/public_images"
+            )
+        )
+    }
+
     override fun isInstalled(userId: String, projectCode: String, imageCode: String): Result<Boolean> {
         return Result(
             // 公共镜像视为默认安装
@@ -53,16 +61,20 @@ class ServiceImageResourceImpl @Autowired constructor(
         )
     }
 
-    override fun getImageDetailByCodeAndVersion(
+    override fun getImageRepoInfoByCodeAndVersion(
         userId: String,
         projectCode: String,
         imageCode: String,
-        imageVersion: String?
-    ): Result<ImageDetail> {
+        imageVersion: String?,
+        pipelineId: String?,
+        buildId: String?
+    ): Result<ImageRepoInfo> {
         return Result(
-            imageService.getImageDetailByCodeAndVersion(
+            imageService.getImageRepoInfoByCodeAndVersion(
                 userId = userId,
                 projectCode = projectCode,
+                pipelineId = pipelineId,
+                buildId = buildId,
                 imageCode = imageCode,
                 imageVersion = imageVersion,
                 interfaceName = "/image/imageCodes/{imageCode}/imageVersions/{imageVersion}"

@@ -74,8 +74,16 @@ interface ServiceProjectResource {
 
     @POST
     @Path("/")
-    @ApiOperation("查询指定项目")
+    @ApiOperation("查询指定项目，不包括被禁用的项目")
     fun listByProjectCode(
+        @ApiParam(value = "项目id", required = true)
+        projectCodes: Set<String>
+    ): Result<List<ProjectVO>>
+
+    @POST
+    @Path("/listOnlyByProjectCode")
+    @ApiOperation("查询指定项目，包括被禁用的项目")
+    fun listOnlyByProjectCode(
         @ApiParam(value = "项目id", required = true)
         projectCodes: Set<String>
     ): Result<List<ProjectVO>>
@@ -164,16 +172,4 @@ interface ServiceProjectResource {
         @PathParam("englishName")
         englishName: String
     ): Result<ProjectVO?>
-
-    @POST
-    @Path("/gitci/{gitProjectId}/{userId}")
-    @ApiOperation("创建gitCI项目")
-    fun createGitCIProject(
-        @ApiParam("工蜂项目id", required = true)
-        @PathParam("gitProjectId")
-        gitProjectId: Long,
-        @ApiParam("用户名", required = true)
-        @PathParam("userId")
-        userId: String
-    ): Result<ProjectVO>
 }

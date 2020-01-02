@@ -28,7 +28,6 @@ package com.tencent.devops.process.engine.service
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
-import com.tencent.devops.common.api.exception.ClientException
 import com.tencent.devops.common.api.exception.RemoteServiceException
 import com.tencent.devops.common.api.util.EnvUtils.parseEnv
 import com.tencent.devops.common.api.util.JsonUtil
@@ -37,7 +36,8 @@ import com.tencent.devops.common.api.util.timestampmilli
 import com.tencent.devops.common.client.Client
 import com.tencent.devops.common.event.dispatcher.pipeline.PipelineEventDispatcher
 import com.tencent.devops.common.event.enums.ActionType
-import com.tencent.devops.common.event.pojo.pipeline.PipelineBuildElementFinishBroadCastEvent
+import com.tencent.devops.common.event.pojo.pipeline.PipelineBuildStatusBroadCastEvent
+import com.tencent.devops.common.event.pojo.pipeline.PipelineBuildTaskFinishBroadCastEvent
 import com.tencent.devops.common.pipeline.container.VMBuildContainer
 import com.tencent.devops.common.pipeline.enums.BuildStatus
 import com.tencent.devops.common.pipeline.enums.BuildTaskStatus
@@ -115,6 +115,7 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
         redisOperation.delete(ContainerUtils.getContainerStartupKey(buildInfo.pipelineId, buildId, vmSeqId))
 
         val variables = pipelineRuntimeService.getAllVariable(buildId)
+        val variablesWithType = pipelineRuntimeService.getAllVariableWithType(buildId)
         val model = (buildDetailService.getBuildModel(buildId)
             ?: throw NotFoundException("Does not exist resource in the pipeline"))
         var vmId = 1
@@ -155,7 +156,7 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
                     )
                     return BuildVariables(
                         buildId, vmSeqId, vmName,
-                        buildInfo.projectId, buildInfo.pipelineId, variables, buildEnvs, it.containerId ?: ""
+                        buildInfo.projectId, buildInfo.pipelineId, variables, buildEnvs, it.containerId ?: "", variablesWithType
                     )
                 }
                 vmId++
@@ -180,13 +181,17 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
             // 如果是成功的状态，则更新构建机启动插件的状态
             if (BuildStatus.isFinish(buildStatus)) {
                 pipelineRuntimeService.updateTaskStatus(
-                    buildId = buildId, taskId = startUpVMTask.taskId,
-                    userId = startUpVMTask.starter, buildStatus = buildStatus
+                    buildId = buildId,
+                    taskId = startUpVMTask.taskId,
+                    userId = startUpVMTask.starter,
+                    buildStatus = buildStatus
                 )
             }
 
             // 失败的话就发终止事件
+            var message: String? = null
             val actionType = if (BuildStatus.isFailure(buildStatus)) {
+                message = "构建机启动失败，所有插件被终止"
                 ActionType.TERMINATE
             } else {
                 ActionType.START
@@ -202,7 +207,8 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
                     stageId = startUpVMTask.stageId,
                     containerId = startUpVMTask.containerId,
                     containerType = startUpVMTask.containerType,
-                    actionType = actionType
+                    actionType = actionType,
+                    reason = message
                 )
             )
             return true
@@ -419,13 +425,15 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
         // 认领任务
         pipelineRuntimeService.claimBuildTask(buildId, task, userId)
 
-        val buildVariable = allVariable
-            .plus(PIPELINE_VMSEQ_ID to vmSeqId)
-            .plus(PIPELINE_ELEMENT_ID to task.taskId)
-            .plus(PIPELINE_TURBO_TASK_ID to turboTaskId)
-            .toMutableMap()
+        val buildVariable = mutableMapOf(
+            PIPELINE_VMSEQ_ID to vmSeqId,
+            PIPELINE_ELEMENT_ID to task.taskId,
+            PIPELINE_TURBO_TASK_ID to turboTaskId
+        )
 
         PipelineVarUtil.fillOldVar(buildVariable)
+
+        buildVariable.putAll(allVariable)
 
         val buildTask = BuildTask(
             buildId = buildId,
@@ -436,7 +444,7 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
             elementName = task.taskName,
             type = task.taskType,
             params = task.taskParams.map {
-                it.key to parseEnv(JsonUtil.toJson(it.value), buildVariable)
+                it.key to parseEnv(command = JsonUtil.toJson(it.value), data = buildVariable, isEscape = true)
             }.filter {
                 !it.first.startsWith("@type")
             }.toMap(),
@@ -445,6 +453,19 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
 
         logger.info("[$buildId]|Claim the task - ($buildTask)")
         buildDetailService.taskStart(buildId, task.taskId)
+
+        pipelineEventDispatcher.dispatch(
+            PipelineBuildStatusBroadCastEvent(
+                source = "vm-build-claim($vmSeqId)",
+                projectId = task.projectId,
+                pipelineId = task.pipelineId,
+                userId = task.starter,
+                buildId = buildId,
+                taskId = task.taskId,
+                actionType = ActionType.START
+            )
+        )
+
         jmxElements.execute(task.taskType)
         return buildTask
     }
@@ -514,19 +535,33 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
             errorMsg = result.message
         )
         pipelineEventDispatcher.dispatch(
-            PipelineBuildElementFinishBroadCastEvent(
+            PipelineBuildTaskFinishBroadCastEvent(
                 source = "build-element-${result.taskId}",
                 projectId = buildInfo.projectId,
                 pipelineId = buildInfo.pipelineId,
                 userId = buildInfo.startUser,
                 buildId = buildInfo.buildId,
-                elementId = result.taskId,
+                taskId = result.taskId,
                 errorType = errorType?.name,
                 errorCode = result.errorCode,
                 errorMsg = result.message
+            ),
+            PipelineBuildStatusBroadCastEvent(
+                source = "task-end-${result.taskId}",
+                projectId = buildInfo.projectId,
+                pipelineId = buildInfo.pipelineId,
+                userId = buildInfo.startUser,
+                buildId = buildInfo.buildId,
+                taskId = result.taskId,
+                actionType = ActionType.END
             )
         )
-        LogUtils.stopLog(rabbitTemplate, buildId, result.elementId, result.containerId ?: "")
+        LogUtils.stopLog(
+            rabbitTemplate = rabbitTemplate,
+            buildId = buildId,
+            tag = result.elementId,
+            jobId = result.containerId ?: ""
+        )
     }
 
     /**
@@ -566,6 +601,9 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
         errorCode: Int?,
         errorMsg: String?
     ) {
+        if (measureService == null) {
+            return
+        }
         try {
             val task = pipelineRuntimeService.getBuildTask(buildId, taskId)!!
             val buildStatus = if (success) BuildStatus.SUCCEED else BuildStatus.FAILED
@@ -590,13 +628,13 @@ class PipelineVMBuildService @Autowired(required = false) constructor(
         }
     }
 
-    @Suppress("UNCHECKED_CAST")
+    @Suppress("UNCHECKED_CAST") // FIXME: 需要重新定义接口拆分实现，此处非开源所需要
     fun getTurboTask(pipelineId: String, elementId: String): String {
         try {
             val instances = consulClient!!.getInstances("turbo")
-                ?: throw ClientException("找不到任何有效的turbo服务提供者")
+                ?: return ""
             if (instances.isEmpty()) {
-                throw ClientException("找不到任何有效的turbo服务提供者")
+                return ""
             }
             val url = "${if (instances[0].isSecure) "https" else
                 "http"}://${instances[0].host}:${instances[0].port}/api/service/turbo/task/pipeline/$pipelineId/$elementId"

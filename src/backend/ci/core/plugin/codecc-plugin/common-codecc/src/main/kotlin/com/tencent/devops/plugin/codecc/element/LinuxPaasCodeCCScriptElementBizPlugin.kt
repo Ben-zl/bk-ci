@@ -59,14 +59,15 @@ class LinuxPaasCodeCCScriptElementBizPlugin constructor(
         pipelineId: String,
         pipelineName: String,
         userId: String,
-        channelCode: ChannelCode
+        channelCode: ChannelCode,
+        create: Boolean
     ) {
         with(element) {
             if (languages.isEmpty()) {
                 throw OperationException("工程语言不能为空")
             }
             try {
-                if (!codeCCTaskId.isNullOrEmpty()) {
+                if ((!create) && (!codeCCTaskId.isNullOrEmpty())) {
                     if (coverityApi.isTaskExist(codeCCTaskId!!, userId)) {
                         // Update the coverity
                         coverityApi.updateTask(pipelineName, userId, element)
@@ -92,7 +93,7 @@ class LinuxPaasCodeCCScriptElementBizPlugin constructor(
 
     override fun beforeDelete(element: LinuxPaasCodeCCScriptElement, userId: String, pipelineId: String?) {
         with(element) {
-            logger.info("Start to delete the task($codeCCTaskId) in codecc by user $userId")
+            logger.info("Start to delete the codecc task($codeCCTaskId) in codecc by user $userId")
             if (codeCCTaskId.isNullOrEmpty()) {
                 logger.warn("The codecc task id is empty")
                 return

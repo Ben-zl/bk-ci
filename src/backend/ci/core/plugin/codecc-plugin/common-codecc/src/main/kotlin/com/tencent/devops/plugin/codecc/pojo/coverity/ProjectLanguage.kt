@@ -26,10 +26,6 @@
 
 package com.tencent.devops.plugin.codecc.pojo.coverity
 
-/**
- * deng
- * 26/01/2018
- */
 enum class ProjectLanguage(val value: String) {
     C("c"),
     C_PLUS_PLUSH("c++"),
@@ -48,6 +44,7 @@ enum class ProjectLanguage(val value: String) {
     SWIFT("swift"),
     TYPESCRIPT("typescript"),
     KOTLIN("kotlin"),
+    CLOJURE("clojure"),
     OTHERS("others");
 
     companion object {

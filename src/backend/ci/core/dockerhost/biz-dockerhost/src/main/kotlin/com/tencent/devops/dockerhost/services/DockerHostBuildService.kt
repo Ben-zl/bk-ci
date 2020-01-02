@@ -26,6 +26,7 @@
 
 package com.tencent.devops.dockerhost.services
 
+import com.github.dockerjava.api.DockerClient
 import com.github.dockerjava.api.exception.NotFoundException
 import com.github.dockerjava.api.model.AuthConfig
 import com.github.dockerjava.api.model.AuthConfigurations
@@ -41,6 +42,7 @@ import com.github.dockerjava.core.command.LogContainerResultCallback
 import com.github.dockerjava.core.command.PullImageResultCallback
 import com.github.dockerjava.core.command.PushImageResultCallback
 import com.github.dockerjava.core.command.WaitContainerResultCallback
+import com.tencent.devops.common.api.constant.CommonMessageCode
 import com.tencent.devops.common.api.pojo.Result
 import com.tencent.devops.common.pipeline.type.docker.ImageType
 import com.tencent.devops.common.web.mq.alert.AlertLevel
@@ -60,10 +62,12 @@ import com.tencent.devops.dockerhost.pojo.DockerBuildParam
 import com.tencent.devops.dockerhost.pojo.DockerRunParam
 import com.tencent.devops.dockerhost.utils.CommonUtils
 import com.tencent.devops.dockerhost.utils.ENTRY_POINT_CMD
+import com.tencent.devops.store.pojo.image.enums.ImageRDTypeEnum
 import org.apache.commons.lang3.StringUtils
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.io.File
+import java.io.IOException
 import java.nio.file.Paths
 import java.util.Date
 import javax.annotation.PostConstruct
@@ -82,7 +86,6 @@ class DockerHostBuildService(
         AlertApi(if ("codecc_build" == dockerHostConfig.runMode) "ms/dispatch-codecc" else "ms/dispatch")
 
     private val config = DefaultDockerClientConfig.createDefaultConfigBuilder()
-        .withDockerHost(dockerHostConfig.dockerHost)
         .withDockerConfig(dockerHostConfig.dockerConfig)
         .withApiVersion(dockerHostConfig.apiVersion)
         .build()
@@ -160,16 +163,23 @@ class DockerHostBuildService(
     ): Result<CheckImageResponse?> {
         logger.info("checkImage buildId: $buildId, checkImageRequest: $checkImageRequest")
         // 判断用户录入的镜像信息是否能正常拉取到镜像
-        val pullImageResult = pullImage(
-            imageType = checkImageRequest.imageType,
-            imageName = checkImageRequest.imageName,
-            registryUser = checkImageRequest.registryUser,
-            registryPwd = checkImageRequest.registryPwd,
-            buildId = buildId
-        )
-        logger.info("pullImageResult: $pullImageResult")
-        if (pullImageResult.isNotOk()) {
-            return Result(pullImageResult.status, pullImageResult.message, null)
+        val imageName = checkImageRequest.imageName
+        try {
+            val pullImageResult = pullImage(
+                imageType = checkImageRequest.imageType,
+                imageName = checkImageRequest.imageName,
+                registryUser = checkImageRequest.registryUser,
+                registryPwd = checkImageRequest.registryPwd,
+                buildId = buildId
+            )
+            logger.info("pullImageResult: $pullImageResult")
+            if (pullImageResult.isNotOk()) {
+                return Result(pullImageResult.status, pullImageResult.message, null)
+            }
+        } catch (t: Throwable) {
+            logger.warn("Fail to pull the image $imageName of build $buildId", t)
+            log(buildId, "pull image fail，error is：${t.message}")
+            return Result(CommonMessageCode.SYSTEM_ERROR.toInt(), t.message, null)
         }
         val dockerImageName = CommonUtils.normalizeImageName(checkImageRequest.imageName)
         // 查询镜像详细信息
@@ -189,19 +199,23 @@ class DockerHostBuildService(
         try {
             val imageName = CommonUtils.normalizeImageName(dockerBuildInfo.imageName)
             // docker pull
-            try {
-                LocalImageCache.saveOrUpdate(imageName)
-                pullImage(
-                    imageType = dockerBuildInfo.imageType,
-                    imageName = dockerBuildInfo.imageName,
-                    registryUser = dockerBuildInfo.registryUser,
-                    registryPwd = dockerBuildInfo.registryPwd,
-                    buildId = dockerBuildInfo.buildId
-                )
-            } catch (t: Throwable) {
-                logger.warn("Fail to pull the image $imageName of build ${dockerBuildInfo.buildId}", t)
-                log(dockerBuildInfo.buildId, "拉取镜像失败，错误信息：${t.message}")
-                log(dockerBuildInfo.buildId, "尝试使用本地镜像启动...")
+            if (dockerBuildInfo.imagePublicFlag == true && dockerBuildInfo.imageRDType?.toLowerCase() == ImageRDTypeEnum.SELF_DEVELOPED.name.toLowerCase()) {
+                log(dockerBuildInfo.buildId, "自研公共镜像，不从仓库拉取，直接从本地启动...")
+            } else {
+                try {
+                    LocalImageCache.saveOrUpdate(imageName)
+                    pullImage(
+                        imageType = dockerBuildInfo.imageType,
+                        imageName = dockerBuildInfo.imageName,
+                        registryUser = dockerBuildInfo.registryUser,
+                        registryPwd = dockerBuildInfo.registryPwd,
+                        buildId = dockerBuildInfo.buildId
+                    )
+                } catch (t: Throwable) {
+                    logger.warn("Fail to pull the image $imageName of build ${dockerBuildInfo.buildId}", t)
+                    log(dockerBuildInfo.buildId, "拉取镜像失败，错误信息：${t.message}")
+                    log(dockerBuildInfo.buildId, "尝试使用本地镜像启动...")
+                }
             }
             // docker run
             val binds = DockerBindLoader.loadBinds(dockerBuildInfo)
@@ -227,7 +241,7 @@ class DockerHostBuildService(
             } else {
                 alertApi.alert(
                     AlertLevel.HIGH.name, "Docker构建机创建容器失败", "Docker构建机创建容器失败, " +
-                        "母机IP:${CommonUtils.getInnerIP()}， 失败信息：${er.message}"
+                    "母机IP:${CommonUtils.getInnerIP()}， 失败信息：${er.message}"
                 )
                 throw ContainerException("Create container failed")
             }
@@ -255,7 +269,6 @@ class DockerHostBuildService(
 
     fun getContainerNum(): Int {
         try {
-            val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
             val dockerInfo = dockerCli.infoCmd().exec()
             return dockerInfo.containersRunning ?: 0
         } catch (e: Throwable) {
@@ -273,12 +286,12 @@ class DockerHostBuildService(
         elementId: String?,
         outer: Boolean
     ): Pair<Boolean, String?> {
+        lateinit var dockerClient: DockerClient
         try {
             val repoAddr = dockerBuildParam.repoAddr
             val userName = dockerBuildParam.userName
             val password = dockerBuildParam.password
             val config = DefaultDockerClientConfig.createDefaultConfigBuilder()
-                .withDockerHost(dockerHostConfig.dockerHost)
                 .withDockerConfig(dockerHostConfig.dockerConfig)
                 .withApiVersion(dockerHostConfig.apiVersion)
                 .withRegistryUrl(repoAddr)
@@ -286,7 +299,7 @@ class DockerHostBuildService(
                 .withRegistryPassword(password)
                 .build()
 
-            val dockerCli = DockerClientBuilder.getInstance(config).build()
+            dockerClient = DockerClientBuilder.getInstance(config).build()
             val authConfig = AuthConfig()
                 .withUsername(userName)
                 .withPassword(password)
@@ -321,7 +334,7 @@ class DockerHostBuildService(
 
             logger.info("Build docker image, workspace: $workspace, buildDir:$buildDir, dockerfile: $dockerfilePath")
             logger.info("Build docker image, imageNameTag: $imageNameTag")
-            val step = dockerCli.buildImageCmd().withNoCache(true)
+            val step = dockerClient.buildImageCmd().withNoCache(true)
                 .withPull(true)
                 .withBuildAuthConfigs(authConfigurations)
                 .withBaseDirectory(baseDirectory)
@@ -334,7 +347,7 @@ class DockerHostBuildService(
                 .awaitImageId()
 
             logger.info("Build image success, now push to repo, image name and tag: $imageNameTag")
-            dockerCli.pushImageCmd(imageNameTag)
+            dockerClient.pushImageCmd(imageNameTag)
                 .withAuthConfig(authConfig)
                 .exec(MyPushImageResultCallback(buildId, elementId, dockerHostBuildApi))
                 .awaitCompletion()
@@ -364,6 +377,12 @@ class DockerHostBuildService(
                 ""
             }
             return Pair(false, e.message + if (cause.isBlank()) "" else " cause:【$cause】")
+        } finally {
+            try {
+                dockerClient.close()
+            } catch (e: IOException) {
+                logger.error("docker client close exception: ${e.message}")
+            }
         }
     }
 
@@ -405,7 +424,9 @@ class DockerHostBuildService(
                 wsInHost = true,
                 registryUser = dockerRunParam.registryUser,
                 registryPwd = dockerRunParam.registryPwd,
-                imageType = ImageType.THIRD.type
+                imageType = ImageType.THIRD.type,
+                imagePublicFlag = false,
+                imageRDType = null
             )
             // docker run
             val env = mutableListOf<String>()
@@ -453,7 +474,6 @@ class DockerHostBuildService(
     }
 
     fun dockerStop(projectId: String, pipelineId: String, vmSeqId: String, buildId: String, containerId: String) {
-        val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
         try {
             // docker stop
             val containerInfo = dockerCli.inspectContainerCmd(containerId).exec()
@@ -474,7 +494,6 @@ class DockerHostBuildService(
 
     fun getDockerLogs(containerId: String, lastLogTime: Int): List<String> {
         val logs = ArrayList<String>()
-        val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
         val logContainerCmd = dockerCli.logContainerCmd(containerId)
             .withStdOut(true)
             .withStdErr(true)
@@ -493,14 +512,12 @@ class DockerHostBuildService(
     }
 
     fun getDockerRunExitCode(containerId: String): Int {
-        val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
         return dockerCli.waitContainerCmd(containerId)
             .exec(WaitContainerResultCallback())
             .awaitStatusCode()
     }
 
     fun clearContainers() {
-        val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
         val containerInfo = dockerCli.listContainersCmd().withStatusFilter(setOf("exited")).exec()
         for (container in containerInfo) {
             logger.info("Clear container, containerId: ${container.id}")
@@ -511,7 +528,6 @@ class DockerHostBuildService(
     @PostConstruct
     fun loadLocalImages() {
         try {
-            val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
             val imageList = dockerCli.listImagesCmd().withShowAll(true).exec()
             logger.info("load local images, image count: ${imageList.size}")
             imageList.forEach c@{
@@ -525,8 +541,6 @@ class DockerHostBuildService(
     }
 
     fun clearLocalImages() {
-        val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
-
         val danglingImages = dockerCli.listImagesCmd().withDanglingFilter(true).withShowAll(true).exec()
         danglingImages.forEach {
             try {
@@ -539,6 +553,9 @@ class DockerHostBuildService(
 
         val imageList = dockerCli.listImagesCmd().withShowAll(true).exec()
         imageList.forEach c@{
+            if (it.repoTags == null || it.repoTags.isEmpty()) {
+                return@c
+            }
             it.repoTags.forEach { image ->
                 val lastUsedDate = LocalImageCache.getDate(image)
                 if (null != lastUsedDate) {
@@ -558,7 +575,6 @@ class DockerHostBuildService(
     }
 
     fun isContainerRunning(containerId: String): Boolean {
-        val dockerCli = CommonUtils.getDockerDefaultClient(dockerHostConfig)
         val inspectContainerResponse = dockerCli.inspectContainerCmd(containerId).exec() ?: return false
         return inspectContainerResponse.state.running ?: false
     }
