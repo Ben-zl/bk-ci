@@ -139,6 +139,7 @@
     import EnumInput from '@/components/atomFormField/EnumInput'
     import FormField from '@/components/AtomPropertyPanel/FormField'
     import Logo from '@/components/Logo'
+    import { allVersionKeyList } from '@/utils/pipelineConst'
 
     export default {
         components: {
@@ -167,9 +168,7 @@
                 failList: [],
                 failMessage: {},
                 buildNoParams: [
-                    'MajorVersion',
-                    'MinorVersion',
-                    'FixVersion'
+                    ...allVersionKeyList
                 ],
                 loading: {
                     isLoading: false,
@@ -414,7 +413,7 @@
             async submit () {
                 if (!this.pipelineNameList.length) {
                     this.$showTips({
-                        message: this.$t('submitErrTips'),
+                        message: this.$t('template.submitErrTips'),
                         theme: 'error'
                     })
                 } else {
@@ -453,7 +452,7 @@
                             const failCount = res.failurePipelines.length
 
                             if (successCount && !failCount) {
-                                message = `${this.$t('submitSucPrefix')}${successCount}${this.$t('submitSucSuffix')}`
+                                message = this.$t('template.submitSucTips', [successCount])
                                 theme = 'success'
 
                                 this.$showTips({
