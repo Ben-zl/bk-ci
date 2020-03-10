@@ -76,8 +76,12 @@ open class CodeccUtils {
 
     fun executeCommand(codeccExecuteConfig: CodeccExecuteConfig): String {
         val codeccWorkspace = getCodeccWorkspace(codeccExecuteConfig)
-        initData(codeccExecuteConfig.scriptType, codeccWorkspace)
-        return doRun(codeccExecuteConfig, codeccWorkspace)
+        try {
+            initData(codeccExecuteConfig.scriptType, codeccWorkspace)
+            return doRun(codeccExecuteConfig, codeccWorkspace)
+        } finally {
+            codeccWorkspace.deleteRecursively()
+        }
     }
 
     private fun getCodeccWorkspace(codeccExecuteConfig: CodeccExecuteConfig): File {
@@ -304,7 +308,7 @@ open class CodeccUtils {
         command.add("-DSCAN_TOOLS=${scanTools.joinToString(",").toLowerCase()}")
         command.add("-DCOVERITY_RESULT_PATH=${File(coverityStartFile).parent}")
 
-        val buildCmd = when (CodeccParamsHelper.getProjectType(taskParams["languages"]!!)) {
+        val buildCmd = when (CodeccParamsHelper.getProjectType(taskParams["languages"])) {
             CoverityProjectType.UN_COMPILE -> {
                 "--no-command --fs-capture-search ."
             }
@@ -344,7 +348,7 @@ open class CodeccUtils {
             command.add("-DPY35_PYLINT_PATH=${workspace.canonicalPath}")
         }
         var subPath = if (BuildEnv.isThirdParty()) "" else
-            "/usr/local/svn/bin:/usr/local/bin:/data/bkdevops/apps/coverity"
+            "/usr/local/svn/bin:/data/bkdevops/apps/coverity"
         subPath = "$subPath:${getJdkPath(scriptType)}:${getNodePath(scriptType)}:" +
             "${getGoMetaLinterPath(scriptType)}:${getGoRootPath(scriptType)}:$STYLE_TOOL_PATH:$PHPCS_TOOL_PATH:${getGoRootPath(scriptType)}:$GO_CI_LINT_PATH"
         command.add("-DSUB_PATH=$subPath")
