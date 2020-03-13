@@ -23,7 +23,7 @@
  * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.tencent.devops.notify.api.service
+package com.tencent.devops.notify.api.builds
 
 import com.tencent.devops.common.api.pojo.Result
 import com.tencent.devops.common.notify.enums.WeworkMediaType
@@ -45,17 +45,24 @@ import javax.ws.rs.Produces
 import javax.ws.rs.QueryParam
 import javax.ws.rs.core.MediaType
 
-@Api(tags = ["SERVICE_NOTIFIES"], description = "通知")
-@Path("/service/notifies")
+/**
+ * @author ajackyu
+ *  date 2019-06-27
+ */
+
+@Api(tags = ["BUILD_NOTIFIES"], description = "通知")
+@Path("/build/notifies")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-interface ServiceNotifyResource {
+interface BuildNotifyResource {
+
     @ApiOperation("发送RTX信息通知")
     @POST
     @Path("/rtx")
     fun sendRtxNotify(
         @ApiParam(value = "RTX信息内容", required = true)
         message: RtxNotifyMessage
+
     ): Result<Boolean>
 
     @ApiOperation("发送电子邮件通知")
